@@ -6,12 +6,31 @@ from database import get_db
 from models import Trip, User, Vehicle
 from schemas import TripCreate, TripResponse
 from routes.auth import get_current_user
-import json
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
 
+# ✅ COORDONNÉES PRINCIPALES CAMEROUN (pour géocodage simple)
+CAMEROON_COORDS = {
+    "yaoundé": {"lat": 3.8667, "lng": 11.5167},
+    "douala": {"lat": 4.0511, "lng": 9.7679},
+    "bafoussam": {"lat": 5.7679, "lng": 10.4167},
+    "kribi": {"lat": 2.9333, "lng": 9.9167},
+    "buea": {"lat": 4.1628, "lng": 9.2410},
+    "bamenda": {"lat": 5.9631, "lng": 10.1591},
+    "garoua": {"lat": 9.3077, "lng": 13.3948},
+    "maroua": {"lat": 10.5916, "lng": 14.3055},
+}
+
+def get_coordinates(location: str):
+    """Retourner les coordonnées pour une ville"""
+    location_lower = location.lower().strip()
+    if location_lower in CAMEROON_COORDS:
+        return CAMEROON_COORDS[location_lower]
+    # Par défaut: Yaoundé
+    return {"lat": 3.8667, "lng": 11.5167}
+
 # ============================================
-# CREATE TRIP - VERSION DEBUG
+# CREATE TRIP
 # ============================================
 
 @router.post("", response_model=dict)
@@ -22,37 +41,14 @@ async def create_trip(
 ):
     """Créer un trajet"""
     try:
-        print("\n" + "="*60)
-        print("[TRIPS] 🔵 CRÉATION TRAJET - DEBUG COMPLET")
-        print("="*60)
+        print(f"\n[TRIPS] 🔵 Création trajet par {current_user.email}")
         
-        # 1️⃣ LOG UTILISATEUR
-        print(f"[TRIPS] 👤 Utilisateur: {current_user.id} - {current_user.email}")
-        print(f"[TRIPS] 👤 Roles: {current_user.roles}")
-        
-        # 2️⃣ LOG DONNÉES REÇUES
-        print(f"\n[TRIPS] 📋 DONNÉES REÇUES:")
-        print(f"[TRIPS]   - vehicle_id: {trip.vehicle_id} (type: {type(trip.vehicle_id)})")
-        print(f"[TRIPS]   - departure_location: {trip.departure_location}")
-        print(f"[TRIPS]   - arrival_location: {trip.arrival_location}")
-        print(f"[TRIPS]   - departure_time: {trip.departure_time} (type: {type(trip.departure_time)})")
-        print(f"[TRIPS]   - arrival_time: {trip.arrival_time} (type: {type(trip.arrival_time)})")
-        print(f"[TRIPS]   - available_seats: {trip.available_seats} (type: {type(trip.available_seats)})")
-        print(f"[TRIPS]   - price_per_seat: {trip.price_per_seat} (type: {type(trip.price_per_seat)})")
-        print(f"[TRIPS]   - description: {trip.description}")
-        
-        # 3️⃣ VÉRIFICATION CONDUCTEUR
-        print(f"\n[TRIPS] 🔐 Vérification rôle...")
         if 'driver' not in current_user.roles.lower():
-            print(f"[TRIPS] ❌ ERREUR: Utilisateur n'est pas conducteur!")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Vous devez être conducteur pour créer un trajet"
             )
-        print(f"[TRIPS] ✅ Utilisateur est conducteur")
         
-        # 4️⃣ VÉRIFICATION VÉHICULE
-        print(f"\n[TRIPS] 🚗 Vérification véhicule...")
         if trip.vehicle_id:
             vehicle = db.query(Vehicle).filter(
                 Vehicle.id == trip.vehicle_id,
@@ -60,27 +56,11 @@ async def create_trip(
             ).first()
             
             if not vehicle:
-                print(f"[TRIPS] ❌ ERREUR: Véhicule {trip.vehicle_id} non trouvé ou n'appartient pas à l'utilisateur!")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Véhicule non trouvé"
                 )
-            print(f"[TRIPS] ✅ Véhicule trouvé: {vehicle.brand} {vehicle.model}")
-        else:
-            print(f"[TRIPS] ⚠️  Pas de véhicule spécifié")
         
-        # 5️⃣ VALIDATION DATETIME
-        print(f"\n[TRIPS] ⏰ Vérification datetime...")
-        if not isinstance(trip.departure_time, datetime):
-            print(f"[TRIPS] ❌ ERREUR: departure_time n'est pas un datetime valide!")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="departure_time doit être un datetime valide"
-            )
-        print(f"[TRIPS] ✅ departure_time valide: {trip.departure_time.isoformat()}")
-        
-        # 6️⃣ CRÉER LE TRAJET
-        print(f"\n[TRIPS] 📝 Création du trajet en base...")
         new_trip = Trip(
             driver_id=current_user.id,
             vehicle_id=trip.vehicle_id,
@@ -96,25 +76,15 @@ async def create_trip(
             updated_at=datetime.utcnow()
         )
         
-        print(f"[TRIPS]   - Objet Trip créé (avant commit)")
-        
-        # 7️⃣ COMMIT EN BASE
-        print(f"[TRIPS] 💾 Commit en base de données...")
         db.add(new_trip)
         db.commit()
         db.refresh(new_trip)
         
-        print(f"[TRIPS] ✅ SUCCÈS! Trajet créé avec ID: {new_trip.id}")
+        print(f"[TRIPS] ✅ Trajet créé: ID {new_trip.id}\n")
         
-        # 8️⃣ VÉRIFICATION EN BASE
-        print(f"\n[TRIPS] 🔍 Vérification en base de données...")
-        trip_check = db.query(Trip).filter(Trip.id == new_trip.id).first()
-        if trip_check:
-            print(f"[TRIPS] ✅ Trajet {trip_check.id} confirmé en base!")
-        else:
-            print(f"[TRIPS] ❌ ERREUR: Trajet pas trouvé après insertion!")
-        
-        print("="*60 + "\n")
+        # ✅ AJOUTER COORDONNÉES
+        departure_coords = get_coordinates(trip.departure_location)
+        arrival_coords = get_coordinates(trip.arrival_location)
         
         return {
             "status": "success",
@@ -124,7 +94,11 @@ async def create_trip(
                 "driver_id": new_trip.driver_id,
                 "vehicle_id": new_trip.vehicle_id,
                 "departure_location": new_trip.departure_location,
+                "departure_latitude": departure_coords["lat"],  # ✅ NOUVEAU
+                "departure_longitude": departure_coords["lng"],  # ✅ NOUVEAU
                 "arrival_location": new_trip.arrival_location,
+                "arrival_latitude": arrival_coords["lat"],  # ✅ NOUVEAU
+                "arrival_longitude": arrival_coords["lng"],  # ✅ NOUVEAU
                 "departure_time": new_trip.departure_time.isoformat() if new_trip.departure_time else None,
                 "arrival_time": new_trip.arrival_time.isoformat() if new_trip.arrival_time else None,
                 "available_seats": new_trip.available_seats,
@@ -136,8 +110,7 @@ async def create_trip(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[TRIPS] ❌ EXCEPTION: {type(e).__name__}: {str(e)}")
-        print("="*60 + "\n")
+        print(f"[TRIPS] ❌ ERREUR: {e}\n")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur: {str(e)}"
@@ -154,13 +127,13 @@ async def get_available_trips(
 ):
     """Récupérer les trajets disponibles"""
     try:
-        print(f"\n[TRIPS] GET /available pour {current_user.email}")
+        print(f"\n[TRIPS] 🔵 GET /available pour {current_user.email}")
         
         trips = db.query(Trip).filter(
             Trip.status.in_(["active", "scheduled"])
         ).all()
         
-        print(f"[TRIPS] ✓ {len(trips)} trajets trouvés en BD")
+        print(f"[TRIPS] ✅ {len(trips)} trajets trouvés")
         
         result = []
         for trip in trips:
@@ -179,12 +152,20 @@ async def get_available_trips(
                         "photo_url": vehicle.vehicle_photo_url,
                     }
             
+            # ✅ AJOUTER COORDONNÉES
+            departure_coords = get_coordinates(trip.departure_location)
+            arrival_coords = get_coordinates(trip.arrival_location)
+            
             trip_obj = {
                 "id": trip.id,
                 "driver_id": trip.driver_id,
                 "vehicle_id": trip.vehicle_id,
                 "departure_location": trip.departure_location,
+                "departure_latitude": departure_coords["lat"],  # ✅ NOUVEAU
+                "departure_longitude": departure_coords["lng"],  # ✅ NOUVEAU
                 "arrival_location": trip.arrival_location,
+                "arrival_latitude": arrival_coords["lat"],  # ✅ NOUVEAU
+                "arrival_longitude": arrival_coords["lng"],  # ✅ NOUVEAU
                 "departure_time": trip.departure_time.isoformat() if trip.departure_time else None,
                 "arrival_time": trip.arrival_time.isoformat() if trip.arrival_time else None,
                 "available_seats": trip.available_seats,
@@ -204,14 +185,14 @@ async def get_available_trips(
             }
             result.append(trip_obj)
         
-        print(f"[TRIPS] ✓ Envoi de {len(result)} trajets au frontend\n")
+        print(f"[TRIPS] Retour de {len(result)} trajets au frontend\n")
         
         return {
             "status": "success",
             "trips": result
         }
     except Exception as e:
-        print(f"[TRIPS] ✗ ERREUR: {e}\n")
+        print(f"[TRIPS] ❌ ERREUR: {e}\n")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur: {str(e)}"
@@ -228,24 +209,32 @@ async def get_my_trips(
 ):
     """Récupérer mes trajets"""
     try:
-        print(f"[TRIPS] GET /my-trips pour {current_user.email}")
+        print(f"\n[TRIPS] GET /my-trips pour {current_user.email}")
         
         trips = db.query(Trip).filter(
             Trip.driver_id == current_user.id
         ).all()
         
-        print(f"[TRIPS] {len(trips)} trajets trouvés pour driver_id={current_user.id}")
+        print(f"[TRIPS] ✅ {len(trips)} trajets trouvés\n")
         
         result = []
         for trip in trips:
             vehicle = db.query(Vehicle).filter(Vehicle.id == trip.vehicle_id).first() if trip.vehicle_id else None
+            
+            # ✅ AJOUTER COORDONNÉES
+            departure_coords = get_coordinates(trip.departure_location)
+            arrival_coords = get_coordinates(trip.arrival_location)
             
             trip_obj = {
                 "id": trip.id,
                 "driver_id": trip.driver_id,
                 "vehicle_id": trip.vehicle_id,
                 "departure_location": trip.departure_location,
+                "departure_latitude": departure_coords["lat"],  # ✅ NOUVEAU
+                "departure_longitude": departure_coords["lng"],  # ✅ NOUVEAU
                 "arrival_location": trip.arrival_location,
+                "arrival_latitude": arrival_coords["lat"],  # ✅ NOUVEAU
+                "arrival_longitude": arrival_coords["lng"],  # ✅ NOUVEAU
                 "departure_time": trip.departure_time.isoformat() if trip.departure_time else None,
                 "arrival_time": trip.arrival_time.isoformat() if trip.arrival_time else None,
                 "available_seats": trip.available_seats,
@@ -270,7 +259,7 @@ async def get_my_trips(
             "trips": result
         }
     except Exception as e:
-        print(f"[TRIPS] ERREUR: {e}")
+        print(f"[TRIPS] ❌ ERREUR: {e}\n")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur: {str(e)}"
@@ -286,9 +275,9 @@ async def get_trip(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Récupérer un trajet"""
+    """Récupérer un trajet par ID"""
     try:
-        print(f"[TRIPS] GET trajet {trip_id}")
+        print(f"\n[TRIPS] GET trajet ID {trip_id}")
         
         trip = db.query(Trip).filter(Trip.id == trip_id).first()
         
@@ -301,12 +290,20 @@ async def get_trip(
         driver = db.query(User).filter(User.id == trip.driver_id).first()
         vehicle = db.query(Vehicle).filter(Vehicle.id == trip.vehicle_id).first() if trip.vehicle_id else None
         
+        # ✅ AJOUTER COORDONNÉES
+        departure_coords = get_coordinates(trip.departure_location)
+        arrival_coords = get_coordinates(trip.arrival_location)
+        
         trip_obj = {
             "id": trip.id,
             "driver_id": trip.driver_id,
             "vehicle_id": trip.vehicle_id,
             "departure_location": trip.departure_location,
+            "departure_latitude": departure_coords["lat"],  # ✅ NOUVEAU
+            "departure_longitude": departure_coords["lng"],  # ✅ NOUVEAU
             "arrival_location": trip.arrival_location,
+            "arrival_latitude": arrival_coords["lat"],  # ✅ NOUVEAU
+            "arrival_longitude": arrival_coords["lng"],  # ✅ NOUVEAU
             "departure_time": trip.departure_time.isoformat() if trip.departure_time else None,
             "arrival_time": trip.arrival_time.isoformat() if trip.arrival_time else None,
             "available_seats": trip.available_seats,
@@ -332,6 +329,8 @@ async def get_trip(
             } if vehicle else None
         }
         
+        print(f"[TRIPS] ✅ Trajet trouvé\n")
+        
         return {
             "status": "success",
             "trip": trip_obj
@@ -339,7 +338,7 @@ async def get_trip(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[TRIPS] ERREUR: {e}")
+        print(f"[TRIPS] ❌ ERREUR: {e}\n")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Erreur: {str(e)}"

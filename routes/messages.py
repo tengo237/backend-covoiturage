@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
 from datetime import datetime
 from database import get_db
 from models import Message, Conversation, User
@@ -9,7 +10,49 @@ from routes.auth import get_current_user
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
 # ============================================
-# GET MY CONVERSATIONS - ✅ AVEC reservation_id
+# ✅ FONCTION HELPER: Retrouver/Créer conversation UNIQUE
+# ============================================
+
+def get_or_create_conversation(user_1_id: int, user_2_id: int, db: Session, reservation_id: int = None):
+    """
+    ✅ Trouver ou créer une conversation UNIQUE
+    
+    Important: Toujours ranger (user_1_id < user_2_id) pour éviter les doublons!
+    """
+    
+    # ✅ S'assurer que user_1_id < user_2_id (ordre standard)
+    if user_1_id > user_2_id:
+        user_1_id, user_2_id = user_2_id, user_1_id
+    
+    # Chercher si la conversation existe déjà
+    conversation = db.query(Conversation).filter(
+        and_(
+            Conversation.user_1_id == user_1_id,
+            Conversation.user_2_id == user_2_id
+        )
+    ).first()
+    
+    # Si elle existe, la retourner
+    if conversation:
+        return conversation
+    
+    # Sinon, la créer
+    new_conversation = Conversation(
+        user_1_id=user_1_id,
+        user_2_id=user_2_id,
+        reservation_id=reservation_id,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    
+    db.add(new_conversation)
+    db.commit()
+    db.refresh(new_conversation)
+    
+    return new_conversation
+
+# ============================================
+# GET MY CONVERSATIONS - ✅ SANS DOUBLONS
 # ============================================
 
 @router.get("/my-conversations", response_model=dict)
@@ -17,24 +60,57 @@ async def get_my_conversations(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Récupérer mes conversations"""
+    """
+    ✅ Récupérer mes conversations (SANS DOUBLONS!)
+    
+    Retourne 1 seule conversation par utilisateur
+    """
     try:
         print(f"\n🔵 Récupération conversations de {current_user.email}")
         
-        # Chercher les conversations où l'utilisateur est impliqué
+        # ✅ Chercher les conversations où l'utilisateur est impliqué
         conversations = db.query(Conversation).filter(
-            (Conversation.user_1_id == current_user.id) | 
-            (Conversation.user_2_id == current_user.id)
+            or_(
+                Conversation.user_1_id == current_user.id,
+                Conversation.user_2_id == current_user.id
+            )
         ).all()
         
-        print(f"🟢 {len(conversations)} conversations trouvées")
+        print(f"🟢 {len(conversations)} conversations trouvées (AVANT déduplication)")
         
-        # Formater avec infos utilisateur et dernier message
-        result = []
+        # ✅ DÉDUPLICATING: Grouper par "l'autre utilisateur"
+        conversations_dict = {}
+        
         for conv in conversations:
+            # Déterminer l'autre utilisateur
+            other_user_id = conv.user_2_id if conv.user_1_id == current_user.id else conv.user_1_id
+            
+            # Créer clé unique
+            conv_key = str(other_user_id)
+            
+            # Garder seulement la conversation la plus récente
+            if conv_key not in conversations_dict:
+                conversations_dict[conv_key] = conv
+            else:
+                # Garder celle avec la date la plus récente
+                if conv.updated_at and conversations_dict[conv_key].updated_at:
+                    if conv.updated_at > conversations_dict[conv_key].updated_at:
+                        conversations_dict[conv_key] = conv
+        
+        # ✅ Convertir en liste
+        unique_conversations = list(conversations_dict.values())
+        print(f"🟢 {len(unique_conversations)} conversations uniques (APRÈS déduplication) ✅")
+        
+        # ✅ Formater avec infos utilisateur et dernier message
+        result = []
+        for conv in unique_conversations:
             # Récupérer l'autre utilisateur
             other_user_id = conv.user_2_id if conv.user_1_id == current_user.id else conv.user_1_id
             other_user = db.query(User).filter(User.id == other_user_id).first()
+            
+            if not other_user:
+                print(f"⚠️ User {other_user_id} not found, skipping conversation")
+                continue
             
             # Récupérer le dernier message
             last_message = db.query(Message).filter(
@@ -52,7 +128,7 @@ async def get_my_conversations(
                 "id": conv.id,
                 "user_1_id": conv.user_1_id,
                 "user_2_id": conv.user_2_id,
-                "reservation_id": conv.reservation_id,  # ✅ NOUVEAU
+                "reservation_id": conv.reservation_id,
                 "user_1": {
                     "id": conv.user_1_id,
                     "name": db.query(User).filter(User.id == conv.user_1_id).first().name if conv.user_1_id else None,
@@ -74,13 +150,13 @@ async def get_my_conversations(
             
             result.append(conv_obj)
         
-        # Trier par dernier message (les plus récents en premier)
+        # ✅ Trier par dernier message (les plus récents en premier)
         result.sort(
             key=lambda x: x['last_message']['created_at'] if x['last_message'] else x['created_at'],
             reverse=True
         )
         
-        print(f"📦 Réponse formatée: {len(result)} conversations\n")
+        print(f"📦 Réponse formatée: {len(result)} conversations uniques\n")
         
         return {
             "status": "success",
@@ -165,7 +241,7 @@ async def get_conversation_messages(
         )
 
 # ============================================
-# SEND MESSAGE
+# SEND MESSAGE - ✅ CRÉE CONVERSATION SI NÉCESSAIRE
 # ============================================
 
 @router.post("", response_model=dict)
@@ -174,17 +250,40 @@ async def send_message(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Envoyer un message"""
+    """
+    ✅ Envoyer un message
+    
+    Crée automatiquement la conversation si elle n'existe pas
+    """
     try:
         print(f"🔵 Envoi message par {current_user.email}")
         
         conversation_id = data.get("conversation_id")
+        receiver_id = data.get("receiver_id")  # Alternative si pas de conversation_id
         content = data.get("content")
+        reservation_id = data.get("reservation_id")
         
-        if not conversation_id or not content:
+        if not content:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="conversation_id et content requis"
+                detail="content requis"
+            )
+        
+        # ✅ Si pas de conversation_id, chercher/créer avec receiver_id
+        if not conversation_id and receiver_id:
+            conversation = get_or_create_conversation(
+                current_user.id, 
+                receiver_id, 
+                db, 
+                reservation_id
+            )
+            conversation_id = conversation.id
+            print(f"[AUTO-CREATE] Conversation créée/trouvée: {conversation_id}")
+        
+        if not conversation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="conversation_id ou receiver_id requis"
             )
         
         # Vérifier que l'utilisateur fait partie de la conversation
@@ -204,7 +303,7 @@ async def send_message(
                 detail="Vous n'avez pas accès à cette conversation"
             )
         
-        # Créer le message
+        # ✅ Créer le message
         message = Message(
             conversation_id=conversation_id,
             sender_id=current_user.id,
@@ -214,6 +313,10 @@ async def send_message(
         )
         
         db.add(message)
+        
+        # ✅ Mettre à jour updated_at de la conversation
+        conversation.updated_at = datetime.utcnow()
+        
         db.commit()
         db.refresh(message)
         

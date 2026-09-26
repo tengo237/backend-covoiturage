@@ -2,11 +2,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime
+from pydantic import BaseModel
 from database import get_db
 from models import Reservation, Trip, User, Vehicle, Conversation
 from routes.auth import get_current_user
 
 router = APIRouter(prefix="/api/reservations", tags=["reservations"])
+
+# ✅ MODÈLE PYDANTIC POUR LE BODY JSON
+class ReservationCreate(BaseModel):
+    trip_id: int
+    number_of_seats: int
 
 # ============================================
 # CREATE RESERVATION
@@ -14,13 +20,16 @@ router = APIRouter(prefix="/api/reservations", tags=["reservations"])
 
 @router.post("", response_model=dict)
 async def create_reservation(
-    trip_id: int,
-    seats_booked: int,
+    request: ReservationCreate,  # ✅ ACCEPTE LE BODY JSON
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Créer une réservation"""
     try:
+        # ✅ UTILISER request.trip_id et request.number_of_seats
+        trip_id = request.trip_id
+        seats_booked = request.number_of_seats
+        
         print(f"\n[RESERVATIONS] Création réservation par {current_user.email}")
         print(f"[RESERVATIONS] - Trip ID: {trip_id}")
         print(f"[RESERVATIONS] - Seats: {seats_booked}")
